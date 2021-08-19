@@ -1,7 +1,9 @@
 # reinforcement-forex
+# disclaimer
+Forex and CFD trading is extremely risky. All materials provided in this repository is only for learning and analysis purpose. It is your own risk taking the code in live trading.
 
-I have been looking for the reinforcement learning environment for leveraged forex trading for a while. I found that there are a lot of environment's for stocks and crypto(es). 
-like [gym-anytrading](https://github.com/AminHP/gym-anytrading) or [tensortrade.org](https://github.com/tensortrade-org/tensortrade).Forex trading has slightly differences from those environment.
+I have been looking for the reinforcement learning environment for leveraged forex trading or CFD trading for a while. I found that there are a lot of environment's for stocks and crypto(es). 
+like [gym-anytrading](https://github.com/AminHP/gym-anytrading) or [tensortrade.org](https://github.com/tensortrade-org/tensortrade). Forex trading has slightly differences from those environment.
 
 
 1. The profit and loss formula is different. It requires to convert back and forth to get the pnl into the account currency, which means we might need an extract data set (i.e. if you trading EURGBP and your account currency is USD, you need extract data pair for GBPUSD).
