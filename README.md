@@ -23,6 +23,11 @@ Inspired by tensor trade, I divided the env into few parts as follow:
 ## code sample
     #first define a Broker instance
     broker = Broker(name='broker1')
+    #using the defualt header to read the csv file which contains all symbols
+    broker.data_processing(datafile='./data/raw_data.csv')
     
-    #then, define an Account instance
+    #define a trade symbol for USDJPY using the defualt value
+    usdjpy = Instructment(broker=broker, symbol='USDJPY')
+    
+    #defining account an Account instance
     account = Account(broker, initial_balance=10000, stop_out=0.1)
