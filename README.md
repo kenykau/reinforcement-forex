@@ -22,7 +22,7 @@ Inspired by tensor trade, I divided the env into few parts as follow:
 
 ## code sample
     #first define a Broker instance
-    broker = Broker(data_file='data_file.csv', currency='USD')
+    broker = Broker(name='broker1')
     
     #then, define an Account instance
     account = Account(broker, initial_balance=10000, stop_out=0.1)
