@@ -1,114 +1,141 @@
+from config import Config
+from os import path
 from typing import List, Dict
 import pandas as pd
+import numpy as np
+import talib as ta
 
 class Broker:
-    def __init__(self, name='broker1') -> None:
-        '''
-        Broker class constructor, broker name can be provided to distingish different brokers
-        '''
-        self.name:str = name          #name of the broker
-        self.symbols:List[str] = []   #symbols of the broker's tradable assets
-        self.data:List[Dict] = []     #a list of data of the symbol
-        self.shift:int = 0            #the position pointer of the data
+    def __init__(self) -> None:
+        
+        # A global pointer indicating the current position of prices
+        self.shift: int = 0
+        
+        # This is the symbol list containing all symbols in the CSV file
+        self.symbols: List[str] = []
+            
+        # The price data for each symbol
+        self.data: List[Dict] = []
+        
+        # Reading all price data from the csv
+        self.pre_process()
+        
+        # Finding missing prices data for each symbol
+        self.post_process()
 
-    def data_processing(self, datafile:str='', fields:Dict={
-            'symbol':'symbol',
-            'tf':'timeframe',
-            'dt':'dt',
-            'o':'open',
-            'h':'high',
-            'l':'low',
-            'c':'close',
-            'v':'volume',
-            'b':'bid',
-            'a':'ask'})->None:
+    def pre_process(self) -> None:
         '''
-        The history data loading of all symbols for the broker
-        The fields parameters provide a way to convert raw data fields to system-wise fields, do not change the key but value of each field in the Dict object to fit the data
+        Broker.pre_process(): reading all price data from the datafile specificed in the Config class
         '''
-        assert len(datafile)>0, 'datafile is empty'
         
-        df = pd.read_csv(datafile, 
-            header=0, 
-            parse_dates=[fields['dt']], 
-            index_col=fields['dt'],
-            infer_datetime_format=True)
+        assert path.exists(Config.datafile), "data file not exists"
+        df = pd.read_csv(
+            Config.datafile,
+            infer_datetime_format=True,
+            parse_dates=[Config.fields["dt"]],
+            header=0,
+            index_col=Config.fields["dt"])
         
-        #get all symbols from the csv file
-        self.symbols = df['symbol'].unique().tolist()
+        # Mapping all fields to the standardized name 'open', 'high', 'low', 'close', 'bid', 'ask', 'volume'
+        mapped_fields = {v: k for k, v in Config.fields.items()}
+        df.rename(columns=mapped_fields, inplace=True)
         
-        #convert csv field name to system-wise field name
-        map_fields = {v:k for k,v in fields.items()}
-        df.rename(columns=map_fields, inplace=True)
-
-        #the datetime index pointer
-        self.dt :pd.DatetimeIndex = df.index.unique().copy()
+        # Extracting the unique datetime index
+        self.dt = df.index.unique().copy()
         
-        #separating symbols data from raw data to the list
-        for pair in self.symbols:
-            #append the details of each symbol to data
+        # Extracting all symbols contained in the csv file
+        self.symbols = df.symbol.unique().tolist()
+        
+        # Separating the prices data for each symbol and making each symbol is in sync. manner
+        for symbol in self.symbols:
             self.data.append({
-                'symbol':pair,
-                'raw': df[df['symbol']==pair].copy()})
-            
-            #alignment of index
-            self.dt = self.dt.drop(self.dt.difference(self.data[-1]['raw'].index).to_list())
+                "symbol": symbol,
+                "df": df[df.symbol == symbol].copy(deep=True)})
+
+            self.dt = self.dt.drop(self.dt.difference(self.data[-1]["df"].index).to_list())
         
-        #alignment of the data
-        for i in range(len(self.data)):
-            #alignment of index
-            self.data[i]['raw'] = self.data[i]['raw'].reindex(self.dt)
-            #alignment of columns
-            self.data[i]['raw'].rename(columns=map_fields, inplace=True)
-            #alignment of index
-            self.data[i]['raw'].index = self.dt
-            
-    def move(self, shift:int=-1)->None:
-        '''
-        move provides the way of moving the pointer to next bar if shift=-1, if shift>=0, the pointer will move to the desire position
-        '''
-        assert shift<len(self.dt), 'shift is too large'
-        if shift>=0:
-            self.shift = shift
-        else:
-            self.shift += 1
+        for d in self.data:
+            d["df"] = d["df"].reindex(self.dt)
+            d["df"] = d["df"].set_index(self.dt)
     
-    def get_data(self, symbol:str, shift:int =-1, window_size:int=0)->pd.DataFrame:
+    
+    
+    def post_process(self) -> None:
         '''
-        Get data of a specific symbol
-        shift:int, the shift of the data, if -1, return the data of the current shift
-        window_size:int, the size of the window, if 0, return all the data of the symbol, if greater than 0, return the data of the window_size starting shift - window_size. Make sure the window_size is smaller than the current shift and the input shift
+        Broker.post_process(): find and move to the first valid price data after adding any features to the dataset
         '''
+        assert len(self.data) > 0, "Data is empty"
+        tmp : List[int] = []
+        for data in self.data:
+            idx = data['df'].apply(pd.DataFrame.first_valid_index).max()
+            tmp.append(idx)
+        self.shift = self.dt.get_loc(max(tmp))
+
+    def move(self, shift: int = -1) -> None:
+        '''
+        Broker.move(shift: int = -1): move the global pointer to the desire position
+        '''
+        assert shift >=0 and shift<len(self.dt), "Invalid position"
+        self.shift = shift
+    
+    def next(self) -> None:
+        '''
+        Broker.next(): move the global pointer to the next avaliable position
+        '''
+        assert self.shift<len(self.dt), "No more data"
+        self.shift += 1
+    
+    def get_data(self, 
+        symbol: str, 
+        window_size: int = 0, 
+        features: List[str] = [], 
+        excludes: List[str] = []) -> pd.DataFrame:
+        '''
+        Broker.get_data(symbol: str, window_size: int, features: List[str], exclude: List[str]) -> pd.DataFrame: 
+        Get the prices or avaliable features from the dataset. 
+        symbol: str -> specify the desired symbol containing in the dataset
+        window_size: int -> default value 0 means get all the data from for the symbol
+        features: List(str) -> only get the desired features or price fields, e.g.:  ['open', 'close', 'rsi']
+        excludes: List(str) -> return all features exclude the specified fields, e.g.: ['spread', 'bid', 'ask']
+        '''
+        assert symbol in self.symbols, "Invalid symbol"
+        assert window_size >= 0, "Invalid window size"
+
+        idx: int = self.symbols.index(symbol)
+        assert self.symbols[idx] == self.data[idx]["symbol"], "Invalid symbol"
+        tmp: pd.DataFrame = self.data[idx]["df"].copy()
+
+        tmp = tmp[tmp.columns.difference(excludes)]
+        if len(features)>0:
+            tmp = tmp[features]
+
+        if window_size == 1:
+            tmp = tmp.iloc[self.shift]
+        elif window_size > 1 and self.shift > 0:
+            assert self.shift >= window_size, "Not enough data"
+            tmp = tmp.iloc[self.shift - window_size : self.shift]
         
-        assert len(self.data)>0, 'data is empty'
-        assert symbol in self.symbols, 'symbol is not in symbol list'     
-        assert shift<len(self.dt), 'shift is not valid'
-        assert (window_size<=self.shift or window_size<shift) and window_size>=0, 'window_size is not valid'
+        return tmp
+    
+    def add_features(self, symbol: str, features: pd.Series, feature_name: str = "") -> None:
+        '''
+        Broker.add_features(symbol:str, features: pd.Series, feature_name: str): Adding features to the specify symbol
+        symbol: str -> Specifies the symbol for the features
+        features: pd.Series -> The feature data
+        feature_name: str -> The feature name, now currently support only one column series.
+        '''
+        assert symbol in self.symbols, "invalid symbol"
+        assert len(features) > 0, "No features to add"
+        assert features.name != None or feature_name != "", "Feature name is empty"
+        assert features.index.equals(self.dt), "Features must be aligned data"
 
-        if shift == -1:
-            shift = self.shift
+        idx = self.symbols.index(symbol)
 
-        if window_size == 0:
-            return self.data[self.symbols.index(symbol)]['raw'].copy()
+        assert features.name not in self.data[idx]["df"].columns, "Feature already exist"
+        assert feature_name not in self.data[idx]["df"].columns, "Feature already exist"
+
+        if feature_name == "":
+            feature_name = features.name
         
-        if window_size > 0:
-            return self.data[self.symbols.index(symbol)]['raw'].iloc[shift-window_size:shift].copy()
-
-    def get_rate(self, symbol:str)->pd.Series:
-        '''
-        Get the rate of a specific symbol
-        '''
-        assert len(self.data)>0, 'data is empty'
-        assert symbol in self.symbols, 'symbol is not in symbol list'
-        return self.data[self.symbols.index(symbol)]['raw'].iloc[self.shift]
-
-    def add_feature(self, symbol:str, feature:pd.Series, feature_name:str='')->None:
-        '''
-        Add a feature to the data of a specific symbol
-        '''
-        assert len(self.data)>0, 'data is empty'
-        assert symbol in self.symbols, 'symbol is not in symbol list'
-        assert len(feature)==len(self.data[self.symbols.index(symbol)]['raw']), 'feature size is not equal to the raw data size'
-        if feature_name == '':
-            feature_name = 'feature'
-        self.data[self.symbols.index(symbol)][feature_name] = feature
+        self.data[idx]["df"][feature_name] = features
+    
