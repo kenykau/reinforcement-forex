@@ -17,17 +17,42 @@ I am new to reinforcement learning and python. Therefore, I would like to invite
 Inspired by tensor trade, I divided the env into few parts as follow:
 1. Broker - Broker class mainly serves as the data provider, which stores the data of 28 pairs trading currencies.
 2. Instructment - The tradable pairs class, which stores the pair attributes like digits, swap charges, lotsize and etc
-3. Trade - The trade class stores the trade information of a particular trade during the trading cycle like openprice, closeprice, floating loss, floating profit, marginhold
+3. Order - The trade class stores the trade information of a particular trade during the trading cycle like openprice, closeprice, floating loss, floating profit, marginhold
 4. Account - The account class stores all trades during the whole training account life cycle, like the number of trades, marginhold, equity, balance and trade history.
+5. FxEnv - The gym env for forex trading
+6. Stable-Baselines3 - Which is required for simplier RL implementataion
+7. You can trade the main.py the test it.
 
 ## code sample
-    #first define a Broker instance
-    broker = Broker(name='broker1')
-    #using the defualt header to read the csv file which contains all symbols
-    broker.data_processing(datafile='./data/raw_data.csv')
+```python
+    #define a broker
+    broker: Broker = Broker()
     
-    #define a trade symbol for USDJPY using the defualt value
-    usdjpy = Instructment(broker=broker, symbol='USDJPY')
+    #define a symbol
+    eurusd: Symbol = Symbol(broker, "EURUSD")
     
-    #defining account an Account instance
-    account = Account(broker, initial_balance=10000, stop_out=0.1)
+    #define a gym env
+    fx: FxEnv = FxEnv(broker=broker, symbol=eurusd, window_size=4)
+
+    #convert the gym env to stable-baselines3 DummyVecEnv
+    ec.check_env(fx)
+    env_creator = lambda: fx
+    env = DummyVecEnv(env_fns=[env_creator])
+    
+    #define the model and train
+    model = A2C("MlpPolicy", env)
+    model.learn(total_timesteps=10000)
+    model.save('eurusd_a2c')
+```
+
+## What I found
+1.  Commission, Spread, Swap will eat your profit completely. I used H1 data to test, most of the training is stop out (I set 50% of initial a/c balance). 
+2.  Next, I set all commission, spread, swap to 0, profit making :), but
+3.  The training process try to perform Holding Action all the time. This might related to reward schema. I hope later on I can resolve this problem. 
+
+## To do
+1.  Use larger time frame to test
+2.  Use different model to test
+3.  Documentation
+4.  Use different reward schema
+5.  Resolve the Holding performance (no more exploration)
