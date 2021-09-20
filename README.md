@@ -21,7 +21,7 @@ Inspired by tensor trade, I divided the env into few parts as follow:
 4. Account - The account class stores all trades during the whole training account life cycle, like the number of trades, marginhold, equity, balance and trade history.
 5. FxEnv - The gym env for forex trading
 6. Stable-Baselines3 - Which is required for simplier RL implementataion
-7. You can trade the main.py the test it.
+7. You can try the main.py the test it (unzip the 2021617-60.zip to get the data, which contains 28 pair forex symbols data).
 
 ## code sample
 ```python
