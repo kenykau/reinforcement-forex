@@ -1,134 +1,196 @@
-import datetime
+from os import close, name
 from broker import Broker
-from cfd_spread import CFDSpread
-from datetime import date, time
-from typing import List
+from config import AssetType, Config, SpreadMode
+from sessional_spread import SessionalSpread
+from typing import List, Dict
+from datetime import timedelta
+
 import pandas as pd
 import numpy as np
-
-class Instructment:
-    def __init__(self, 
-        broker:Broker,
-        symbol:str,
-        account_currency:str='USD',
-        leverage:int=100,
-        lotsize:int=100000,
-        asset_type:str='forex',
-        point_cash_value:float=0.0,
-        swap_long:float=2.5,
-        swap_short:float=3.5,
-        swap_day:int=2,
-        comission:float=7,
-        spread_ranges:List[int]=[2,7],
-        spread_mode:str='random',
-        fixed_spread:float=0,
-    )->None:
+import talib as ta
+class Symbol:
+    def __init__(self,
+        broker: Broker,
+        symbol: str) -> None:
         '''
-        Instructment constructor
-        broker: an instance of the Broker
-        symbol: the name of symbol
-        account_currency: the account currency
-        leverage: the leverage of the symbol
-        lotsize: the size per lot, usually 100000 for forex trading
-        asset_type: forex, index or commodity
-        swap_long: swap charges for long position -> +ve means charges will be debit from the account
-        swap_short: swap charges for short position -> -ve means charges will be credit to the account
-        swap_day: the day of week when the swap will be debit or credit for sat and sun
-        commission: some ECN account will charge fixed commission for each lot when opening a position
-        spread_ranges: the range for generating a random spread
-        spread_mode: either fixed, included or random, fixed spread can be set by fixed_spread parameter; random spread will generate the spread randomly within the spread ranges; included should need to provide the bid and ask field in the raw data file
-        fixed_spread: the fixed spread for the symbol
+        broker: Broker -> Specifies a broker for the symbol
+        symbol: str -> Symbol name
         '''
-        self.broker:Broker = broker
-        self.symbol:str = symbol
-        self.account_currency:str = account_currency
-        self.leverage:int = leverage
-        self.lotsize:int = lotsize
-        self.asset_type:str = asset_type
-        self.swap_long:float = swap_long
-        self.swap_short:float = swap_short
-        self.swap_day:int = swap_day
-        self.comission:float = comission
-        self.spread_ranges:List[int] = spread_ranges
-        self.spread_mode:str = spread_mode
-        self.fixed_spread:float = fixed_spread
-        self.pt_value:float = point_cash_value
-        self.cash_pair:str = self.get_cashpair()
-        self.cfd_spread:CFDSpread = None
+        assert symbol in broker.symbols, "Invalid symbol"
+        assert len(list(filter(lambda x: x["name"] == symbol, Config.symbols))) == 1, "Symbol details not set in config file"
         
-        #set digits from the raw data
-        tmp = broker.get_data(symbol)
-        _d =tmp[['o','h','l','c']].apply(lambda x: x.astype(str).str.extract('\.(.*)', expand=False).astype(str).str.len())
-        self.digits = (_d.max()).max()
+        self.broker = broker
         
+        # getting the symbol specification from the Config class
+        self.info = list(filter(lambda x: x["name"] == symbol, Config.symbols))[0]
+        
+        # getting the cash currency pair
+        self.cash_pair: str = self.get_cash_pair()
 
-    def get_cashpair(self)->str:
+        # initialize the sessional_spread to None
+        self.sessional_spread: SessionalSpread = None
+        
         '''
-        for forex asset only, as the asset need to convert back to the account currency
+        The following are example to illustrate adding the features for the symbol
         '''
+        # self.add_ema()
+        # self.add_band()
+        # self.add_roc()
+        # self.add_atr()
+
+    def get_cash_pair(self) -> str:
+        '''
+        Instructment.get_cash_pair(): This is to get the account currency and quote currency pair, so that which is needed to convert back and forth of the account currency       
+        '''
+        
         result: str = None
-        if self.asset_type == 'forex':
-            quote: str = self.symbol[-3:]
-            if quote == self.account_currency:
-                result = self.symbol
+        if self.info["asset_type"] == AssetType.FOREX:
+            if self.info["quote"] != Config.account["currency"]:
+                tmp: List[str] = list(filter(lambda x: self.info["quote"] in x and Config.account["currency"] in x, self.broker.symbols))
+                assert len(tmp) == 1, "None or more than 1 of fx pair is found"
+                result = tmp[0]
             else:
-                cash_pair: str = list(filter(lambda x: quote in x and self.account_currency in x, self.broker.symbols))
-                assert len(cash_pair) == 1, f'Error in getting point cash value of the underlying asset.'
-                result = cash_pair[0]
+                result = self.info["name"]
+        else:
+            result = Config.account["currency"]
         return result
 
-    def set_spread(self)->None:
+    def get_rate(self) -> Dict:
         '''
-        compute the random or fixed spread for forex asset and spread mode
+        Instructment.get_rate(): Getting the price rates for the symbol, those rates can be used in trading simulation
         '''
-        assert self.asset_type=='forex', f'Error! Use set_cfd_spread for the underlying asset.'
-        tmp : pd.DataFrame = self.broker.get_data(self.symbol)
-        if self.spread_mode == 'random':
-            spread_range:List[float] = [self.spread_ranges[0]/(10**self.digits)*1.0, self.spread_ranges[1]/(10**self.digits)*1.0]
-            s = pd.Series(
-                np.round(
-                    np.random.uniform(
-                        low=spread_range[0], 
-                        high=spread_range[1], 
-                        size=len(tmp.index)
-                    ),
-                    decimals=self.digits), 
-                index=tmp.index, name='s')
-            self.broker.add_feature(symbol=self.symbol, feature=s, feature_name='s')
-        elif self.spread_mode == 'fixed':
-            self.broker.add_feature(symbol=self.symbol, feature=pd.Series(self.fixed_spread, index=self.broker.dt, name='s'))
-        else:
-            assert 'a' in tmp.columns and 'b' in tmp.columns, f'Error in getting bid ask fields of the underlying asset.'
-            self.broker.add_feature(symbol=self.symbol, feature=pd.Series(tmp['a']-tmp['b'], index=tmp.index, name='s'), feature_name='s')
+        tmp = self.broker.get_data(
+            symbol = self.info["name"],
+            window_size = 1,
+            features = ["tf", "open", "high", "low", "close", "vol", "bid", "ask", "spread"])
+        result: Dict = dict(zip(tmp.index, tmp.tolist()))
 
-    def set_cfd_spread(self, cfd_spread:CFDSpread)->None:
+        result["dt"] = tmp.name
+        result["dt_close"] = result["dt"] + timedelta(minutes = result["tf"]) - timedelta(milliseconds=1)
+        result.pop("tf")
+        return result
+
+    def get_pt_value(self, applied_price: str = "close") -> float:
         '''
-        the function is setting up the spread of time session related asset like index or commodity
+        Instructment.get_pt_value(applied_price:str): 
+        The point value of the symbol respectively to the account currency
+        applied_price:str -> Either of 'open', 'high', 'low', 'close' symbol rate's respective account currency will need to be return 
         '''
-        assert self.asset_type!='forex', f'Error! Use set_spread for the underlying asset.'
-        assert self.cfd_spread is None, f'Error! spread has been already set.'
-        assert cfd_spread is not None, f'Error! cfd_spread is None.'
+        val: float = 1
+        if self.info["asset_type"] == AssetType.FOREX:
+            if self.info["quote"] != Config.account["currency"]:
+                tmp = self.broker.get_data(self.cash_pair, 1, [applied_price])
+                val = 1/tmp[applied_price]
+        else:
+            assert self.info["fixed_pt_value"] > 0, "Invalid fixed point value for the underlying asset."
+            val = self.info["fixed_pt_value"]
         
-        self.cfd_spread = cfd_spread
+        assert val > 0, "Invalid point value for the underlying asset."
+        return val
 
-    def get_spread(self)->float:
+    def set_spread(self, session_spread: SessionalSpread = None) -> None:
         '''
-        get the spread of the asset base on the current position of the shift
+        Instructment.set_spread(session_spread: SessionalSpread) ->
+        Setting the spread of the underlying instructment according the spread method
         '''
-        if self.asset_type=='forex':
-            return self.broker.get_rate(self.symbol)['s']
-        else:
-            assert self.cfd_spread is not None, f'Error in getting spread of the underlying asset.'
-            dt: datetime = self.broker.dt[self.broker.shift]
-            return self.cfd_spread.get_spread(dt)
+        
+        if self.info["spread_mode"] == SpreadMode.RANDOM:
+            s = np.random.uniform(
+                low = self.info["min_spread"]/(10**self.info["digits"]),
+                high = self.info["max_spread"]/(10**self.info["digits"]),
+                size = len(self.broker.dt)
+            )
+            s = np.round(s, self.info["digits"])
+            spread : pd.Series = pd.Series(s, name = "spread", index = self.broker.dt)
+            self.broker.add_features(self.info["name"], spread)
 
-    def get_pt_value(self, applied_price='c')->float:
+        if self.info["spread_mode"] in [SpreadMode.FIXED, SpreadMode.IGNORE]:
+            s = np.zeros(len(self.broker.dt))
+            if self.info["spread_mode"] == SpreadMode.FIXED:
+                s += self.info["fixed_spread"]
+            spread : pd.Series = pd.Series(s, name = "spread", index = self.broker.dt)
+            self.broker.add_features(self.info["name"], spread)
+            
+        if self.info["spread_mode"] == SpreadMode.SESSIONAL:
+            assert session_spread != None, "Sessional Spread is not provided"
+            self.sessional_spread = session_spread
+
+        if self.info["spread_mode"] == SpreadMode.BIDASK:
+            tmp: pd.DataFrame = self.broker.get_data(
+                symbol = self.info["name"],
+                window_size = 0,
+                features = ["bid", "ask"]
+            )
+            sprad = tmp.ask - tmp.bid
+            self.broker.add_features(self.info["name"], sprad, "spread")
+
+    def get_spread(self) -> float:
         '''
-        convert the point value to account currency, only open, close, bid, ask will convert back to account currency as it is not sync. for the high and low price field 
-        for other type of asset, it is assumed the quote currency is the account currency. Therefore a fix point_value is return
+        Instructment.get_spread(): getting the current spread
         '''
-        assert applied_price in ['o', 'c', 'b', 'a'], f'Error in getting point cash value of the underlying asset.'
-        if self.asset_type=='forex':
-            return self.broker.get_rate(self.cash_pair)[applied_price]
-        else:
-            return self.pt_value
+        if self.info["spread_mode"] == SpreadMode.SESSIONAL:
+            assert self.sessional_spread != None, "Sessional spread is not set"
+            return self.sessional_spread.get_spread(self.broker.dt[self.broker.shift])
+
+        if self.info["spread_mode"] in [SpreadMode.FIXED, SpreadMode.BIDASK, SpreadMode.RANDOM]:
+            if self.info["name"] in self.broker.symbols:
+                tmp = self.broker.get_data(self.info["name"], 1, ["spread"])
+                return tmp.spread
+
+        if self.info["spread_mode"] == SpreadMode.IGNORE:
+            return 0.0
+
+    def add_sto(self) -> None:
+        '''
+        Instructment.add_sto(): This is the demo of adding stochastic oscillator to the symbol using the talib
+        '''
+        rates: pd.DataFrame = self.broker.get_data(symbol = self.info["name"], window_size = 0, features = ["open", "high", "low", "close"])
+        slowk, slowd = ta.STOCH(high=rates.high,
+                                low=rates.low,
+                                fastk_period=5,
+                                close=rates.close,
+                                slowk_period=3,
+                                slowk_matype=0,
+                                slowd_period=3,
+                                slowd_matype=0)
+        self.broker.add_features(symbol = self.info["name"], features = slowk, feature_name = "sto_fast")
+        self.broker.add_features(symbol = self.info["name"], features = slowd, feature_name = "sto_slow")
+
+    def add_ema(self) -> None:
+        '''
+        Instructment.add_ema(): demo of adding ema to the symbol using the talib
+        '''
+        rates: pd.DataFrame = self.broker.get_data(symbol = self.info["name"], window_size = 0, features = ["open", "high", "low", "close"])
+        ema = ta.EMA(rates.close, timeperiod=5)
+        ema_code = rates.close - ema
+        ema_code = ema_code.apply(lambda x: 1 if x>0 else 0)
+        self.broker.add_features(symbol = self.info["name"], features = ema_code, feature_name = "ema")
+
+    def add_roc(self) -> None:
+        '''
+        Instructment.add_roc(): adding the Rate Of Change of the symbol using the talib
+        '''
+        rates: pd.DataFrame = self.broker.get_data(symbol = self.info["name"], window_size = 0, features = ["open", "high", "low", "close"])
+        roc = ta.ROC(rates.close, timeperiod=5)
+        self.broker.add_features(symbol = self.info["name"], features = roc, feature_name = "roc")
+
+    def add_band(self) -> None:
+        '''
+        Instructment.add_band(): adding the Bollinger Band to the symbol using the talib
+        '''
+        rates: pd.DataFrame = self.broker.get_data(symbol = self.info["name"], window_size = 0, features = ["open", "high", "low", "close"])
+        upper, middle, lower = ta.BBANDS(rates.close, timeperiod=5, nbdevup=2, nbdevdn=2, matype=0)
+        self.broker.add_features(symbol = self.info["name"], features = upper, feature_name = "bb_upper")
+        self.broker.add_features(symbol = self.info["name"], features = middle, feature_name = "bb_middle")
+        self.broker.add_features(symbol = self.info["name"], features = lower, feature_name = "bb_lower")
+    
+    def add_atr(self) -> None:
+        '''
+        Instructment.add_atr(): adding the Actual True Range indicator to the symbol using talib
+        '''
+        rates: pd.DataFrame = self.broker.get_data(symbol = self.info["name"], window_size = 0, features = ["open", "high", "low", "close"])
+        atr = ta.ATR(high=rates.high,
+                     low=rates.low,
+                     close=rates.close,
+                     timeperiod=5)
+        self.broker.add_features(symbol = self.info["name"], features = atr, feature_name = "atr")
