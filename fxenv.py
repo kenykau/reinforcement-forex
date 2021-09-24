@@ -52,6 +52,10 @@ class FxEnv(gym.Env):
         if curr.equity < Config.account["balance"] * 0.5:
             result = True
 
+        # adding 5% increase in balance will end the episode
+        if curr.equity > Config.account["balance"] * 1.05:
+            result = True
+            
         self.done = result
         return result
 
